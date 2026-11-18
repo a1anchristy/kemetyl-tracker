@@ -89,6 +89,17 @@ svg .avgt{fill:var(--tx);font-weight:600}
 </section>
 
 <section class="panel">
+<h2>Export CSV</h2>
+<div class="row">
+<label>Line<select id="xl"><option value="all">All lines</option><option value="1">Line 1</option><option value="2">Line 2</option><option value="3">Line 3</option></select></label>
+<label>Shift<select id="xs"><option value="all">All shifts</option><option value="M">Morning</option><option value="A">Afternoon</option><option value="O">Overtime</option></select></label>
+<label>Period<select id="xp"><option value="d">Today</option><option value="w">This week</option><option value="m">This month</option><option value="a">All time</option></select></label>
+<button id="xgo">Download CSV</button>
+</div>
+<p class="note" id="xinfo"></p>
+</section>
+
+<section class="panel">
 <details>
 <summary>Settings and backup</summary>
 <div class="row" style="margin-top:12px">
@@ -102,11 +113,10 @@ svg .avgt{fill:var(--tx);font-weight:600}
 <label>Afternoon ends<input id="e" type="time"></label>
 </div>
 <div class="row" style="margin-top:12px">
-<button class="ghost" id="csv">Export CSV</button>
 <button class="ghost" id="clear">Clear all data</button>
 </div>
 <h2 style="margin:14px 0 4px">Saved products</h2><div id="pm"></div>
-<p class="note">Entries are saved in this browser on this device only. Export a CSV regularly as a backup. Changing bottles per pallet affects new entries only.</p>
+<p class="note">Entries are saved in this browser on this device only. Use Export CSV above (All lines, All time) regularly as a backup. Changing bottles per pallet affects new entries only.</p>
 </details>
 </section>
 </main>
@@ -191,7 +201,7 @@ const cs=s=>{s=String(s||'');if(/^[=+\-@]/.test(s))s="'"+s;return '"'+s.replace(
 const mins=s=>{const[h,m]=s.split(':').map(Number);return h*60+m};
 const sod=d=>{const x=new Date(d);x.setHours(0,0,0,0);return x};
 const at=(d,t)=>new Date(sod(d).getTime()+mins(t)*6e4);
-const shiftOf=ts=>{const d=new Date(ts),m=d.getHours()*60+d.getMinutes();return m>=mins(cfg.m)&&m<mins(cfg.a)?'M':'A'};
+const shiftOf=ts=>{const d=new Date(ts),m=d.getHours()*60+d.getMinutes();return m>=mins(cfg.m)&&m<mins(cfg.a)?'M':m>=mins(cfg.a)&&m<mins(cfg.e)?'A':'O'};
 const hrs=s=>{const n=new Date(),st=at(n,s=='M'?cfg.m:cfg.a),en=at(n,s=='M'?cfg.a:cfg.e);return Math.max(0,(Math.min(n,en)-st)/36e5)};
 const sum=f=>log.filter(f).reduce((a,e)=>(a.p+=e.p,a.b+=e.p*e.bpp,a),{p:0,b:0});
 const pad=n=>String(n).padStart(2,'0');
@@ -217,17 +227,18 @@ function render(){
     card('Today','Both shifts',D,hM+hA)+
     card('This week','Monday to now',W)+
     card('This month',n.toLocaleDateString('en-GB',{month:'long',year:'numeric'}),Mo);
-  let t='<tr><th>Line</th><th>Morning pallets</th><th>Afternoon pallets</th><th>Total pallets</th><th>Total bottles</th></tr>';
+  let t='<tr><th>Line</th><th>Morning pallets</th><th>Afternoon pallets</th><th>Overtime pallets</th><th>Total pallets</th><th>Total bottles</th></tr>';
   ['1','2','3'].forEach(l=>{
     const f=s=>sum(e=>today(e)&&e.line==l&&(!s||shiftOf(e.ts)==s));
-    const m=f('M'),a=f('A'),d=f();
-    t+=`<tr><td>Line ${l}</td><td>${nf(m.p)}</td><td>${nf(a.p)}</td><td>${nf(d.p)}</td><td>${nf(d.b)}</td></tr>`;
+    const m=f('M'),a=f('A'),o=f('O'),d=f();
+    t+=`<tr><td>Line ${l}</td><td>${nf(m.p)}</td><td>${nf(a.p)}</td><td>${nf(o.p)}</td><td>${nf(d.p)}</td><td>${nf(d.b)}</td></tr>`;
   });
   [5,10,'S10'].forEach(z=>{
     const f=s=>sum(e=>today(e)&&e.line=='3'&&e.size==z&&(!s||shiftOf(e.ts)==s));
-    const m=f('M'),a=f('A'),d=f();
-    if(d.p>0)t+=`<tr><td>&nbsp;&nbsp;↳ Line 3, ${lbl(z)}</td><td>${nf(m.p)}</td><td>${nf(a.p)}</td><td>${nf(d.p)}</td><td>${nf(d.b)}</td></tr>`;
+    const m=f('M'),a=f('A'),o=f('O'),d=f();
+    if(d.p>0)t+=`<tr><td>&nbsp;&nbsp;↳ Line 3, ${lbl(z)}</td><td>${nf(m.p)}</td><td>${nf(a.p)}</td><td>${nf(o.p)}</td><td>${nf(d.p)}</td><td>${nf(d.b)}</td></tr>`;
   });
+  xinfo();
   $('chartp').style.display=sel=='all'?'':'none';
   if(sel=='all')drawChart();
   $('lines').innerHTML=t;
@@ -264,12 +275,32 @@ $('pm').onclick=ev=>{
     save('lot_prod',prods);sync();render();
   }
 };
-$('csv').onclick=()=>{
-  const rows=['datetime,line,product,size,shift,pallets,bottles',...[...log].sort((a,b)=>a.ts-b.ts).map(e=>`${new Date(e.ts).toISOString()},${e.line},${cs(e.prod)},${e.size?lbl(e.size):''},${shiftOf(e.ts)=='M'?'Morning':'Afternoon'},${e.p},${e.p*e.bpp}`)];
+function xrows(){
+  const n=new Date(),t0=sod(n).getTime(),w0=t0-((n.getDay()+6)%7)*864e5,mo0=new Date(n.getFullYear(),n.getMonth(),1).getTime();
+  const l=$('xl').value,sh=$('xs').value,p=$('xp').value;
+  const from=p=='d'?t0:p=='w'?w0:p=='m'?mo0:0,to=p=='d'?t0+864e5:Infinity;
+  return log.filter(e=>(l=='all'||e.line==l)&&(sh=='all'||shiftOf(e.ts)==sh)&&e.ts>=from&&e.ts<to).sort((a,b)=>a.ts-b.ts);
+}
+function xinfo(){
+  const r=xrows(),t=r.reduce((a,e)=>(a.p+=e.p,a.b+=e.p*e.bpp,a),{p:0,b:0});
+  $('xinfo').textContent=r.length?`${r.length} entries · ${nf(t.p)} pallets · ${nf(t.b)} bottles`:'No entries match these choices.';
+}
+const ymd=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+$('xgo').onclick=()=>{
+  const r=xrows();if(!r.length)return;
+  const SN={M:'Morning',A:'Afternoon',O:'Overtime'};
+  let tp=0,tb=0;
+  const rows=['datetime,line,product,size,shift,pallets,bottles',...r.map(e=>{
+    tp+=e.p;tb+=e.p*e.bpp;const d=new Date(e.ts);
+    return `${ymd(d)} ${pad(d.getHours())}:${pad(d.getMinutes())},${e.line},${cs(e.prod)},${e.size?lbl(e.size):''},${SN[shiftOf(e.ts)]},${e.p},${e.p*e.bpp}`;
+  }),`TOTAL,,,,,${tp},${tb}`];
+  const l=$('xl').value,sh=$('xs').value,p=$('xp').value;
+  const name=['kemetyl',l=='all'?'all-lines':'line'+l,sh=='all'?'all-shifts':SN[sh].toLowerCase(),{d:'today',w:'week',m:'month',a:'all-time'}[p],ymd(new Date())].join('-')+'.csv';
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
-  a.download='pallet-log.csv';a.click();
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+rows.join('\n')],{type:'text/csv'}));
+  a.download=name;document.body.appendChild(a);a.click();a.remove();
 };
+['xl','xs','xp'].forEach(k=>$(k).onchange=xinfo);
 $('clear').onclick=()=>{if(confirm('Delete all entries on this device?')){log=[];save(K,log);render()}};
 $('cm').onchange=render;$('cr').onchange=render;$('cv').onchange=render;
 $('line').onchange=sync;sync();render();setInterval(render,60000);
